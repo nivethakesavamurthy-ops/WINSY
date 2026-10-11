@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Love Heart</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  #heart { transition: opacity 1.2s; }
+  #heart.dim { opacity: .22; }
+  #confetti { pointer-events: none; z-index: 4; }
+
+  /* ---------- Start screen ---------- */
+  #start {
+    position: fixed; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 14px;
+    background: #000; color: #ff3b3b; font-family: Arial, sans-serif;
+    cursor: pointer; z-index: 10; transition: opacity .8s;
+  }
+  #start .icon { font-size: 64px; animation: beat 1.2s infinite; }
+  #start p { margin: 0; letter-spacing: 2px; font-size: 14px; opacity: .8; }
+  @keyframes beat { 0%,100%{transform:scale(1)} 50%{transform:scale(1.2)} }
+
+  /* ---------- Buttons ---------- */
+  .btn {
+    position: fixed; z-index: 6; background: rgba(0,0,0,.4); color: #ff3b3b;
+    border: 1px solid #ff3b3b66; border-radius: 20px; padding: 6px 14px;
+    font-size: 14px; cursor: pointer;
+  }
+  #mute { top: 14px; right: 14px; }
+  #replay {
+    bottom: 20px; left: 50%; transform: translateX(-50%);
+    opacity: 0; pointer-events: none; transition: opacity 1s;
+  }
+  #replay.show { opacity: 1; pointer-events: auto; }
+
+  /* ---------- Final message ---------- */
+  #msg {
+    position: fixed; inset: 0; z-index: 5; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; text-align: center;
+    pointer-events: none; opacity: 0; transform: scale(.6);
+    transition: opacity 1s, transform 1s cubic-bezier(.2,1.4,.4,1);
+    font-family: Georgia, "Times New Roman", serif; padding: 0 20px;
+  }
+  #msg.show { opacity: 1; transform: scale(1); }
+  #msg h1 {
+    margin: 0; font-size: clamp(34px, 8vw, 100px); color: #fff;
+    text-shadow: 0 0 20px #ff2d55, 0 0 50px #ff2d55, 0 0 90px #ff0033;
+  }
+  #msg p {
+    margin: 14px 0 0; font-size: clamp(16px, 3.2vw, 34px); color: #ffb3c1;
+    text-shadow: 0 0 14px #ff2d55; max-width: 90vw;
+  }
+</style>
+</head>
+<body>
+
+<div id="start"><div class="icon">❤</div><p>TAP TO BEGIN</p></div>
+
+<canvas id="heart"></canvas>
+<canvas id="confetti"></canvas>
+
+<div id="msg"><h1 id="msgTitle"></h1><p id="msgSub"></p></div>
+
+<button class="btn" id="mute">🔊</button>
+<button class="btn" id="replay">↻ Replay</button>
+
+<!-- Put your music file in the SAME folder and name it music.mp3 -->
+<audio id="music" src="music.mp3" loop preload="auto"></audio>
+
+<script>
+// =====================================================
+//                    EDIT HERE ONLY
+// =====================================================
+const WORD     = "JAANU";                  // the ONE word that fills the whole heart
+const MESSAGE  = "YOU WILL ALWAYS HAVE ME BY YOUR SIDE";      // big glowing title shown at the end
+const SUBTITLE = "LOVE YOU WINSY ❤"; // smaller message under the title
+// =====================================================
+
+const words = [WORD];
+
+const FALL = 900;   // ms a word takes to fall
+const FLIP = 650;   // ms a word takes to flip
+
+const hc = document.getElementById("heart"),    ctx = hc.getContext("2d");
+const cc = document.getElementById("confetti"), cctx = cc.getContext("2d");
+let W, H, dpr, items = [], startTime = 0, running = false, done = false, endTime = 0;
+let fontPx = 14, fontStr = "";
+
+// ---------- Heart shape (classic curve) ----------
+const poly = [];
+for (let i = 0; i < 400; i++) {
+  const t = (i / 400) * Math.PI * 2;
+  poly.push([
+    16 * Math.pow(Math.sin(t), 3),
+    13 * Math.cos(t) - 5 * Math.cos(2*t) - 2 * Math.cos(3*t) - Math.cos(4*t)
+  ]);
+}
+function inPoly(x, y) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [xi, yi] = poly[i], [xj, yj] = poly[j];
+    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+// ---------- Build the layout: same-size words, justified rows ----------
+function build() {
+  dpr = window.devicePixelRatio || 1;
+  W = window.innerWidth; H = window.innerHeight;
+  for (const c of [hc, cc]) { c.width = W * dpr; c.height = H * dpr; }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  cctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  const s  = Math.min((W * 0.90) / 32, (H * 0.80) / 29);
+  const cx = W / 2, cy = H / 2 - 2.5 * s;
+  const fits = (px, py) => inPoly((px - cx) / s, -(py - cy) / s);
+
+  fontPx = Math.max(10, Math.min(24, s * 0.62));
+  fontStr = `bold ${fontPx}px Arial, "Noto Sans", sans-serif`;
+  ctx.font = fontStr;
+  const widths = words.map(w => ctx.measureText(w).width);
+  const minGap = fontPx * 0.7, maxGap = fontPx * 2.4, rh = fontPx * 1.6;
+  const minW = Math.min(...widths);
+
+  const all = [];
+  const yStart = cy - 12.3 * s, yEnd = cy + 17.2 * s;
+
+  for (let yc = yStart + rh / 2; yc < yEnd; yc += rh) {
+    const yt = yc - rh * 0.45, yb = yc + rh * 0.45;
+    // find horizontal runs inside the heart for this row
+    const runs = []; let rs = null;
+    const x0 = cx - 17 * s, x1 = cx + 17 * s;
+    for (let x = x0; x <= x1; x += 2) {
+      const ok = fits(x, yt) && fits(x, yb) && fits(x, yc);
+      if (ok && rs === null) rs = x;
+      if ((!ok || x + 2 > x1) && rs !== null) { runs.push([rs + 2, x - 2]); rs = null; }
+    }
+
+    for (const [xl, xr] of runs) {
+      const L = xr - xl;
+      if (L < minW) continue;
+
+      // pick the set of words that fills this run best
+      let best = null, bestSum = 0;
+      for (let a = 0; a < 40; a++) {
+        const list = []; let sum = 0, fails = 0, last = -1;
+        while (fails < 6) {
+          const k = Math.floor(Math.random() * words.length);
+          const need = sum + widths[k] + minGap * list.length;
+          // only avoid repeats when there are 3+ different words
+          if ((words.length > 2 && k === last) || need > L) { fails++; continue; }
+          list.push(k); sum += widths[k]; last = k;
+        }
+        const total = sum + minGap * Math.max(0, list.length - 1);
+        if (list.length && total > bestSum) { best = list.slice(); bestSum = total; }
+      }
+      if (!best) continue;
+
+      const n = best.length, sumW = best.reduce((p, k) => p + widths[k], 0);
+      let gap = n > 1 ? (L - sumW) / (n - 1) : 0;
+      let px;
+      if (n === 1 || gap > maxGap) { gap = Math.min(gap, maxGap); px = xl + (L - (sumW + gap * (n - 1))) / 2; }
+      else px = xl;
+
+      best.forEach((k, i) => {
+        const w = widths[k];
+        const x = px + w / 2;
+        px += w + gap;
+        let edge = (i === 0 || i === n - 1);
+        if (!edge) {
+          for (const pt of [x - w / 2, x, x + w / 2]) {
+            if (!fits(pt, yc - rh * 0.95) || !fits(pt, yc + rh * 0.95)) { edge = true; break; }
+          }
+        }
+        all.push({ text: words[k], x, y: yc, edge, start: 0, phase: Math.random() * 6.28 });
+      });
+    }
+  }
+
+  // ----- ordering: outline first (around the heart), then fill inward -----
+  const mid = H / 2;
+  const outline = all.filter(i => i.edge).sort((a, b) => ang(a) - ang(b));
+  const inside  = all.filter(i => !i.edge).sort((a, b) => dist(b) - dist(a));
+  function ang(i) { let a = Math.atan2(i.x - cx, i.y - mid); if (a < 0) a += Math.PI * 2; return a; }
+  function dist(i) { return Math.hypot(i.x - cx, (i.y - mid) * 1.1); }
+
+  const stepO = Math.min(70, 3200 / Math.max(1, outline.length));
+  outline.forEach((it, i) => it.start = 400 + i * stepO);
+  const insideBase = 400 + outline.length * stepO + FALL + 500;
+  const stepI = Math.min(45, 4500 / Math.max(1, inside.length));
+  inside.forEach((it, i) => it.start = insideBase + i * stepI);
+
+  items = outline.concat(inside);
+  endTime = insideBase + inside.length * stepI + FALL + FLIP + 300;
+}
+
+// ---------- Drawing ----------
+function bounce(x) {
+  const n1 = 7.5625, d1 = 2.75;
+  if (x < 1 / d1) return n1 * x * x;
+  if (x < 2 / d1) return n1 * (x -= 1.5 / d1) * x + .75;
+  if (x < 2.5 / d1) return n1 * (x -= 2.25 / d1) * x + .9375;
+  return n1 * (x -= 2.625 / d1) * x + .984375;
+}
+
+function drawHeart(now) {
+  ctx.clearRect(0, 0, W, H);
+  if (!running) return;
+  const t = now - startTime;
+
+  ctx.save();
+  if (done) {   // heartbeat after completion
+    const b = 1 + 0.02 * Math.pow(Math.max(0, Math.sin(t / 380)), 8);
+    ctx.translate(W / 2, H / 2); ctx.scale(b, b); ctx.translate(-W / 2, -H / 2);
+  }
+  ctx.font = fontStr; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+
+  for (const it of items) {
+    const u = t - it.start;
+    if (u < 0) continue;
+    let y = it.y, sy = 1, color = "#ff3030", glow = 4;
+
+    if (u < FALL) {
+      const p = u / FALL;
+      y = -40 + (it.y + 40) * bounce(p);
+      color = "#ffd6d6"; glow = 0;
+    } else if (u < FALL + FLIP) {
+      const f = (u - FALL) / FLIP;
+      sy = Math.cos(f * Math.PI * 2);
+      if (Math.abs(sy) < 0.04) sy = 0.04 * (sy < 0 ? -1 : 1);
+      color = `rgb(255,${Math.round(214 - 166 * f)},${Math.round(214 - 166 * f)})`;  // white -> red
+      glow = 6;
+    } else if (done) {
+      ctx.globalAlpha = 0.85 + 0.15 * Math.sin(t / 600 + it.phase);
+    }
+
+    ctx.fillStyle = color;
+    ctx.shadowColor = "#ff1010"; ctx.shadowBlur = glow;
+    ctx.save();
+    ctx.translate(it.x, y); ctx.scale(1, sy);
+    ctx.fillText(it.text, 0, 0);
+    ctx.restore();
+    ctx.globalAlpha = 1;
+  }
+  ctx.restore();
+
+  if (!done && t >= endTime) finish();
+}
+
+// ---------- Confetti ----------
+let parts = [];
+const colors = ["#ff2d55", "#ff6b81", "#ffd700", "#ffffff", "#ff9ff3", "#feca57", "#48dbfb", "#ff4757"];
+
+function burst(x, y, count, angle, spread, power) {
+  for (let i = 0; i < count; i++) {
+    const a = angle + (Math.random() - 0.5) * spread;
+    const v = power * (0.4 + Math.random() * 0.8);
+    parts.push({
+      x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v,
+      w: 6 + Math.random() * 7, h: 4 + Math.random() * 6,
+      rot: Math.random() * 6.28, vr: (Math.random() - 0.5) * 0.35,
+      color: colors[Math.floor(Math.random() * colors.length)],
+      circle: Math.random() < 0.25, life: 0, tilt: Math.random() * 6.28
+    });
+  }
+}
+
+function drawConfetti() {
+  cctx.clearRect(0, 0, W, H);
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const p = parts[i];
+    p.vy += 0.22; p.vx *= 0.992; p.vy *= 0.992;
+    p.x += p.vx; p.y += p.vy; p.rot += p.vr; p.tilt += 0.12; p.life++;
+    if (p.y > H + 30) { parts.splice(i, 1); continue; }
+    cctx.save();
+    cctx.translate(p.x, p.y); cctx.rotate(p.rot);
+    cctx.scale(1, Math.cos(p.tilt));
+    cctx.fillStyle = p.color;
+    if (p.circle) { cctx.beginPath(); cctx.arc(0, 0, p.w / 2, 0, 6.28); cctx.fill(); }
+    else cctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+    cctx.restore();
+  }
+}
+
+function finish() {
+  done = true;
+  document.getElementById("heart").classList.add("dim");
+  document.getElementById("msgTitle").textContent = MESSAGE;
+  document.getElementById("msgSub").textContent = SUBTITLE;
+  document.getElementById("msg").classList.add("show");
+  document.getElementById("replay").classList.add("show");
+
+  // confetti cannons from both bottom corners + top centre
+  const fire = () => {
+    burst(0, H, 90, -Math.PI / 3, 0.9, 20 + W / 90);
+    burst(W, H, 90, -2 * Math.PI / 3, 0.9, 20 + W / 90);
+    burst(W / 2, H * 0.1, 60, Math.PI / 2, 2.4, 9);
+  };
+  fire();
+  for (let i = 1; i <= 5; i++) setTimeout(fire, i * 800);
+}
+
+// ---------- Main loop ----------
+function loop(now) {
+  drawHeart(now);
+  drawConfetti();
+  requestAnimationFrame(loop);
+}
+
+function begin() {
+  done = false; parts = [];
+  document.getElementById("heart").classList.remove("dim");
+  document.getElementById("msg").classList.remove("show");
+  document.getElementById("replay").classList.remove("show");
+  startTime = performance.now();
+  running = true;
+}
+
+// ---------- Controls + music ----------
+const music = document.getElementById("music");
+const startEl = document.getElementById("start");
+const muteBtn = document.getElementById("mute");
+
+startEl.addEventListener("click", () => {
+  music.volume = 0.8;
+  music.play().catch(() => console.log("Add music.mp3 next to heart.html"));
+  startEl.style.opacity = 0;
+  startEl.style.pointerEvents = "none";
+  setTimeout(() => startEl.remove(), 800);
+  begin();
+});
+
+muteBtn.addEventListener("click", () => {
+  music.muted = !music.muted;
+  muteBtn.textContent = music.muted ? "🔇" : "🔊";
+});
+
+document.getElementById("replay").addEventListener("click", () => { build(); begin(); });
+
+let rz;
+window.addEventListener("resize", () => {
+  clearTimeout(rz);
+  rz = setTimeout(() => { build(); if (running) begin(); }, 250);
+});
+
+build();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
